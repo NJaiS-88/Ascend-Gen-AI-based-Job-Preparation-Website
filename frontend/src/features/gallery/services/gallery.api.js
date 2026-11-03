@@ -76,11 +76,19 @@ export async function purgeCloudImageMetadata(imageId) {
 }
 
 /**
- * Phase 27: Reconcile local images against cloud index
+ * Phase 27 & Phase 37: Reconcile local images against cloud index
  * POST /api/gallery/reconcile
+ * Matches user + fingerprints/imageIds in cloud and returns existing imageIds & captions.
+ *
+ * @param {Array<{ fingerprint: string, imageId?: string, status?: string }>} items
  */
-export async function reconcileCloudMetadata(records) {
-    const scrubbedItems = records.map(r => enforcePrivacyBoundary(r));
+export async function reconcileCloudMetadata(items) {
+    if (!items || items.length === 0) return { matchedByFingerprint: [] };
+    const scrubbedItems = items.map(r => ({
+        fingerprint: String(r.fingerprint),
+        ...(r.imageId ? { imageId: String(r.imageId) } : {}),
+        ...(r.status ? { status: String(r.status) } : {})
+    }));
     const response = await galleryApi.post('/reconcile', { items: scrubbedItems });
     return response.data;
 }
@@ -132,15 +140,4 @@ export async function syncCloudAvailability(updates) {
     return response.data;
 }
 
-/**
- * Phase 37: Cross-Browser Cloud Reconciliation
- * POST /api/gallery/reconcile
- * Matches user + fingerprints in cloud and returns existing imageIds & captions.
- *
- * @param {Array<{ fingerprint: string, imageId?: string, status?: string }>} items
- */
-export async function reconcileCloudMetadata(items) {
-    if (!items || items.length === 0) return { matchedByFingerprint: [] };
-    const response = await galleryApi.post('/reconcile', { items });
-    return response.data;
-}
+
