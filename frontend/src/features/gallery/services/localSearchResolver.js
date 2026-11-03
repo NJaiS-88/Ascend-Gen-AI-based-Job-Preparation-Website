@@ -15,6 +15,7 @@
 import { getImageById, getFolderById } from './galleryDb';
 import { resolveFileByPath } from './fileSystem';
 import { createTrackedBlobUrl, revokeTrackedBlobUrl } from './blobRegistry';
+import { reconciliationQueue } from './reconciliationQueue';
 
 /**
  * Resolves a single image identifier (e.g. "A101") from Pinecone search results
@@ -54,6 +55,7 @@ export async function resolveLocalSearchResult(imageId) {
         // Step 1: IndexedDB lookup by imageId
         const imageRecord = await getImageById(imageId);
         if (!imageRecord) {
+            reconciliationQueue.queueFailedResolution(imageId, 'record_not_in_indexeddb');
             return {
                 success: false,
                 imageId,
@@ -63,6 +65,7 @@ export async function resolveLocalSearchResult(imageId) {
 
         // Check if image is marked missing
         if (imageRecord.status === 'missing') {
+            reconciliationQueue.queueFailedResolution(imageId, 'image_marked_missing');
             return {
                 success: false,
                 imageId,
@@ -76,6 +79,7 @@ export async function resolveLocalSearchResult(imageId) {
         const targetPath = relativePath || fileName;
 
         if (!folderId || !targetPath) {
+            reconciliationQueue.queueFailedResolution(imageId, 'incomplete_location_metadata');
             return {
                 success: false,
                 imageId,
@@ -87,6 +91,7 @@ export async function resolveLocalSearchResult(imageId) {
         // Step 3: Retrieve FileSystemDirectoryHandle from IndexedDB folders store
         const folderRecord = await getFolderById(folderId);
         if (!folderRecord || !folderRecord.handle) {
+            reconciliationQueue.queueFailedResolution(imageId, 'directory_handle_unavailable');
             return {
                 success: false,
                 imageId,
@@ -121,6 +126,7 @@ export async function resolveLocalSearchResult(imageId) {
         // Step 4: Resolve native File from filesystem
         const file = await resolveFileByPath(directoryHandle, targetPath);
         if (!file) {
+            reconciliationQueue.queueFailedResolution(imageId, 'file_not_found_on_disk');
             return {
                 success: false,
                 imageId,
@@ -132,6 +138,7 @@ export async function resolveLocalSearchResult(imageId) {
         // Step 5: Generate temporary tracked Blob URL (managed by blobRegistry.js)
         const blobUrl = createTrackedBlobUrl(file);
         if (!blobUrl) {
+            reconciliationQueue.queueFailedResolution(imageId, 'blob_url_creation_failed');
             return {
                 success: false,
                 imageId,
@@ -152,6 +159,7 @@ export async function resolveLocalSearchResult(imageId) {
         };
     } catch (err) {
         console.warn(`[LocalSearchResolver] Error resolving ${imageId}:`, err);
+        reconciliationQueue.queueFailedResolution(imageId, err.message || 'resolution_error');
         return {
             success: false,
             imageId,
@@ -183,6 +191,18 @@ export async function resolveBatchSearchResults(searchResults) {
     });
 
     return await Promise.all(promises);
+}
+
+/**
+ * Phase 36: Resolves an array of search results and filters out broken results that failed local resolution.
+ * Broken results are skipped completely while automatically queued for reconciliation.
+ *
+ * @param {Array<{ imageId: string, score: number }>} searchResults
+ * @returns {Promise<Array<Object>>} Only successfully verified and resolved results
+ */
+export async function resolveAndFilterAvailableResults(searchResults) {
+    const resolvedList = await resolveBatchSearchResults(searchResults);
+    return resolvedList.filter(item => item.success && item.blobUrl);
 }
 
 /**
