@@ -715,46 +715,114 @@ function roundScore(val) {
 
 /**
  * POST /api/gallery/ask
- * Phase 29: AI Question-Answering over user's photo captions (RAG semantic query).
- * Query strictly pairs: { ...(imageId ? { imageId } : {}), userId: req.user.id }
- * Never { imageId } alone.
+ * Phase 38: RAG (Retrieval-Augmented Generation) Pipeline
+ *
+ * Question
+ *   ↓
+ * query embedding + Pinecone user namespace (via RAG service /semantic-search)
+ *   ↓
+ * relevant imageIds
+ *   ↓
+ * MongoDB captions (status: 'available', userId: req.user.id)
+ *   ↓
+ * LLM (Google Gemini Flash 2.5 via RAG service /rag/ask)
+ *   ↓
+ * Returns: { message: "...", imageIds: ["A101", "A291", ...] }
+ *
+ * Browser resolves imageIds locally on device.
  */
 const askMetadata = async (req, res) => {
     try {
         const userId = req.user.id;
         const { question, imageId } = req.validatedData;
+        const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000';
 
-        // Extract key search terms from question
-        const cleanQ = question.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
-        const tokens = cleanQ.split(/\s+/).filter(t => t.length > 2);
+        // 1. Query embedding + Pinecone user namespace retrieval
+        let relevantImageIds = [];
+        try {
+            const semanticRes = await fetch(`${RAG_SERVICE_URL}/semantic-search`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: question,
+                    userId: String(userId),
+                    top_k: 10
+                }),
+                signal: AbortSignal.timeout(6000)
+            });
 
-        const filter = {
-            userId,
-            status: 'available'
-        };
+            if (semanticRes.ok) {
+                const semanticData = await semanticRes.json();
+                const matches = semanticData.results || [];
+                relevantImageIds = matches.map(m => m.imageId);
+            }
+        } catch (semanticErr) {
+            console.log('[GalleryController] Notice: Pinecone vector retrieval fallback to keyword in ask:', semanticErr.message);
+        }
+
+        // Fallback: If Pinecone was offline or returned empty, use keyword search to find candidate imageIds
+        if (relevantImageIds.length === 0) {
+            const cleanQ = question.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
+            const tokens = cleanQ.split(/\s+/).filter(t => t.length > 2);
+            if (tokens.length > 0) {
+                const regexPatterns = tokens.map(t => new RegExp(t, 'i'));
+                const fallbackMatches = await Metadata.find({
+                    userId,
+                    status: 'available',
+                    $or: [
+                        { caption: { $in: regexPatterns } },
+                        { keywords: { $in: tokens } }
+                    ]
+                }).limit(10).select('imageId').lean();
+                relevantImageIds = fallbackMatches.map(m => m.imageId);
+            }
+        }
 
         // If asking about a specific image, pair { imageId, userId }
         if (imageId) {
-            filter.imageId = imageId;
+            relevantImageIds = [imageId];
         }
 
-        const candidates = await Metadata.find(filter).limit(300).lean();
-
-        if (candidates.length === 0) {
+        // 2. Fetch MongoDB captions for the relevant imageIds
+        if (relevantImageIds.length === 0) {
             return res.status(200).json({
-                question,
-                answer: "You do not have any photos indexed in your gallery yet. Connect a local folder to start indexing your photos.",
-                referencedImages: []
+                message: `I searched your photo library, but could not find any photos matching "${question}".`,
+                imageIds: []
             });
         }
 
-        // Phase 31: Delegate to FastAPI LangChain + Gemini Flash 2.5 RAG service when active
-        const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000';
+        const mongoFilter = {
+            userId,
+            imageId: { $in: relevantImageIds },
+            status: 'available'
+        };
+        const candidates = await Metadata.find(mongoFilter).lean();
+
+        if (candidates.length === 0) {
+            return res.status(200).json({
+                message: `I searched your photo library, but could not find any available photos matching "${question}".`,
+                imageIds: []
+            });
+        }
+
+        // Preserve Pinecone ranking order for candidate captions
+        const candidateMap = new Map(candidates.map(c => [c.imageId, c]));
+        const orderedCandidates = [];
+        for (const id of relevantImageIds) {
+            const item = candidateMap.get(id);
+            if (item) orderedCandidates.push(item);
+        }
+        const finalCandidates = orderedCandidates.length > 0 ? orderedCandidates : candidates;
+
+        // 3. LLM Generation via RAG Service (Gemini Flash 2.5)
+        let answerMessage = "";
+        let referencedImageIds = [];
+
         try {
             const ragPayload = {
                 question,
                 userId: String(userId),
-                images: candidates.map(c => ({
+                images: finalCandidates.map(c => ({
                     imageId: c.imageId,
                     caption: c.caption,
                     keywords: c.keywords || [],
@@ -772,50 +840,31 @@ const askMetadata = async (req, res) => {
 
             if (ragResponse.ok) {
                 const ragData = await ragResponse.json();
-                return res.status(200).json({
-                    question: ragData.question,
-                    answer: ragData.answer,
-                    model: ragData.model || 'gemini-2.5-flash',
-                    engine: 'langchain-fastapi',
-                    referencedImages: ragData.referencedImages
-                });
+                answerMessage = ragData.answer || "";
+                if (Array.isArray(ragData.referencedImages) && ragData.referencedImages.length > 0) {
+                    referencedImageIds = ragData.referencedImages.map(r => r.imageId);
+                }
             }
         } catch (ragErr) {
-            console.log('[GalleryController] Notice: FastAPI RAG service unavailable, using local retrieval fallback:', ragErr.message);
+            console.log('[GalleryController] Notice: RAG LLM invocation fallback in ask:', ragErr.message);
         }
 
-        // Score relevant photo captions against question
-        const matched = candidates.map(c => {
-            let matches = 0;
-            const text = `${c.caption || ''} ${(c.keywords || []).join(' ')}`.toLowerCase();
-            for (const t of tokens) {
-                if (text.includes(t)) matches++;
-            }
-            return { ...c, matches };
-        }).filter(c => c.matches > 0);
-
-        matched.sort((a, b) => b.matches - a.matches);
-        const topMatches = matched.slice(0, 5);
-
-        let answer = "";
-        if (topMatches.length === 0) {
-            answer = `I searched your photo library, but could not find any photos matching "${question}".`;
-        } else {
-            const descriptions = topMatches.map((m, idx) => `Photo ${idx + 1}: "${m.caption}"`).join("; ");
-            answer = `Based on your private photo library, I found ${topMatches.length} relevant photo(s). ${descriptions}`;
+        // Fallback message synthesis if LLM service offline
+        if (!answerMessage) {
+            answerMessage = `I found ${finalCandidates.length} photo(s) in your private library that appear relevant to "${question}".`;
         }
 
+        if (referencedImageIds.length === 0) {
+            referencedImageIds = finalCandidates.slice(0, 5).map(c => c.imageId);
+        }
+
+        // 4. Return standard Phase 38 contract: { message, imageIds }
         return res.status(200).json({
-            question,
-            answer,
-            referencedImages: topMatches.map(m => ({
-                imageId: m.imageId,
-                caption: m.caption,
-                keywords: m.keywords
-            }))
+            message: answerMessage,
+            imageIds: referencedImageIds
         });
     } catch (err) {
-        console.error('[GalleryController] Error asking metadata:', err);
+        console.error('[GalleryController] Error answering question with RAG:', err);
         return res.status(500).json({ message: "Internal server error answering question" });
     }
 };
