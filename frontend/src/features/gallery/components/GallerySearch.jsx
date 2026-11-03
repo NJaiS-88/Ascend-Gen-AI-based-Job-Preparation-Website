@@ -3,12 +3,19 @@ export default function GallerySearch({
     setSearchQuery,
     totalItems,
     onSemanticSearch = null,
-    isSemanticSearching = false
+    isSemanticSearching = false,
+    onAskAI = null,
+    isAskingAI = false
 }) {
     const handleKeyDown = (e) => {
-        if (e.key === 'Enter' && onSemanticSearch && searchQuery.trim()) {
+        if (e.key === 'Enter' && searchQuery.trim()) {
             e.preventDefault();
-            onSemanticSearch(searchQuery.trim());
+            const text = searchQuery.trim();
+            if (text.endsWith('?') && onAskAI) {
+                onAskAI(text);
+            } else if (onSemanticSearch) {
+                onSemanticSearch(text);
+            }
         }
     };
 
@@ -21,7 +28,7 @@ export default function GallerySearch({
             flexWrap: 'wrap',
             marginBottom: '24px'
         }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: '1', minWidth: '280px', maxWidth: '520px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: '1', minWidth: '280px', maxWidth: '600px' }}>
                 <div style={{ position: 'relative', flex: 1 }}>
                     <span style={{
                         position: 'absolute',
@@ -37,7 +44,7 @@ export default function GallerySearch({
                     <input
                         type="text"
                         className="form-input"
-                        placeholder="Search photos or describe (e.g. beach at sunset)..."
+                        placeholder="Search photos or ask a question (e.g. photos near sunset?)..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         onKeyDown={handleKeyDown}
@@ -48,22 +55,46 @@ export default function GallerySearch({
                 {onSemanticSearch && (
                     <button
                         onClick={() => searchQuery.trim() && onSemanticSearch(searchQuery.trim())}
-                        disabled={!searchQuery.trim() || isSemanticSearching}
+                        disabled={!searchQuery.trim() || isSemanticSearching || isAskingAI}
                         className="btn-nav-primary"
                         style={{
                             fontSize: '0.82rem',
-                            padding: '8px 14px',
+                            padding: '8px 12px',
                             whiteSpace: 'nowrap',
                             display: 'flex',
                             alignItems: 'center',
-                            gap: '6px',
-                            cursor: (!searchQuery.trim() || isSemanticSearching) ? 'not-allowed' : 'pointer',
-                            opacity: (!searchQuery.trim() || isSemanticSearching) ? 0.6 : 1
+                            gap: '5px',
+                            cursor: (!searchQuery.trim() || isSemanticSearching || isAskingAI) ? 'not-allowed' : 'pointer',
+                            opacity: (!searchQuery.trim() || isSemanticSearching || isAskingAI) ? 0.6 : 1
                         }}
                         title="Search using Pinecone semantic vector AI"
                     >
                         <span>✨</span>
                         <span>{isSemanticSearching ? 'Searching...' : 'AI Search'}</span>
+                    </button>
+                )}
+
+                {onAskAI && (
+                    <button
+                        onClick={() => searchQuery.trim() && onAskAI(searchQuery.trim())}
+                        disabled={!searchQuery.trim() || isAskingAI || isSemanticSearching}
+                        className="btn-nav-primary"
+                        style={{
+                            fontSize: '0.82rem',
+                            padding: '8px 12px',
+                            whiteSpace: 'nowrap',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            backgroundColor: '#0284c7',
+                            borderColor: '#0284c7',
+                            cursor: (!searchQuery.trim() || isAskingAI || isSemanticSearching) ? 'not-allowed' : 'pointer',
+                            opacity: (!searchQuery.trim() || isAskingAI || isSemanticSearching) ? 0.6 : 1
+                        }}
+                        title="Ask conversational question over photos using LangChain RAG + Gemini Flash 2.5"
+                    >
+                        <span>🤖</span>
+                        <span>{isAskingAI ? 'Thinking...' : 'Ask AI'}</span>
                     </button>
                 )}
             </div>

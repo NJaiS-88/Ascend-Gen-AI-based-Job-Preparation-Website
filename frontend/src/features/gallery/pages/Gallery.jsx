@@ -5,11 +5,12 @@ import ConnectFolder from '../components/ConnectFolder';
 import GalleryGrid from '../components/GalleryGrid';
 import GallerySearch from '../components/GallerySearch';
 import SemanticSearchResults from '../components/SemanticSearchResults';
+import RagAnswerResults from '../components/RagAnswerResults';
 import PrivateAiBanner from '../components/PrivateAiBanner';
 import AiIndexingBanner from '../components/AiIndexingBanner';
 import { useGallery } from '../hooks/useGallery';
 import { isMobileOrTabletDevice } from '../services/fileSystem';
-import { semanticSearch } from '../services/gallery.api';
+import { semanticSearch, askCloudMetadata } from '../services/gallery.api';
 import { resolveAndFilterAvailableResults } from '../services/localSearchResolver';
 
 export default function Gallery() {
@@ -32,12 +33,15 @@ export default function Gallery() {
     const [semanticResults, setSemanticResults] = useState(null);
     const [isSemanticSearching, setIsSemanticSearching] = useState(false);
     const [semanticQuery, setSemanticQuery] = useState('');
+    const [ragAnswer, setRagAnswer] = useState(null);
+    const [isAskingAI, setIsAskingAI] = useState(false);
     const navigate = useNavigate();
 
     const handleSemanticSearch = async (queryText) => {
         if (!queryText || !queryText.trim()) return;
         setIsSemanticSearching(true);
         setSemanticQuery(queryText.trim());
+        setRagAnswer(null); // Clear RAG answer when doing semantic search
         try {
             const data = await semanticSearch(queryText.trim(), 30);
             // Phase 36: Final Availability Verification
@@ -56,6 +60,37 @@ export default function Gallery() {
     const handleClearSemanticSearch = () => {
         setSemanticResults(null);
         setSemanticQuery('');
+    };
+
+    const handleAskAI = async (questionText) => {
+        if (!questionText || !questionText.trim()) return;
+        setIsAskingAI(true);
+        setSemanticResults(null); // Clear semantic search when asking conversational question
+        setRagAnswer({ question: questionText.trim(), message: '', images: [] });
+        try {
+            const data = await askCloudMetadata(questionText.trim());
+            // Phase 38: Browser resolves them locally
+            const candidateItems = (data.imageIds || []).map(id => ({ imageId: id }));
+            const verifiedImages = await resolveAndFilterAvailableResults(candidateItems);
+            setRagAnswer({
+                question: questionText.trim(),
+                message: data.message || "I found relevant photos in your library.",
+                images: verifiedImages
+            });
+        } catch (err) {
+            console.error('Ask AI error:', err);
+            setRagAnswer({
+                question: questionText.trim(),
+                message: "Sorry, I encountered an error answering your question. Please ensure photos are connected.",
+                images: []
+            });
+        } finally {
+            setIsAskingAI(false);
+        }
+    };
+
+    const handleClearRagAnswer = () => {
+        setRagAnswer(null);
     };
 
     return (
@@ -196,9 +231,19 @@ export default function Gallery() {
                                     totalItems={activeFolder.imageRecords?.length || activeFolder.fileCount || 0}
                                     onSemanticSearch={handleSemanticSearch}
                                     isSemanticSearching={isSemanticSearching}
+                                    onAskAI={handleAskAI}
+                                    isAskingAI={isAskingAI}
                                 />
 
-                                {semanticResults !== null ? (
+                                {ragAnswer !== null ? (
+                                    <RagAnswerResults
+                                        message={ragAnswer.message}
+                                        question={ragAnswer.question}
+                                        images={ragAnswer.images}
+                                        loading={isAskingAI}
+                                        onClear={handleClearRagAnswer}
+                                    />
+                                ) : semanticResults !== null ? (
                                     <SemanticSearchResults
                                         results={semanticResults}
                                         query={semanticQuery}

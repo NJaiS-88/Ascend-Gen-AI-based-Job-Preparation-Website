@@ -34,9 +34,9 @@ RETRIEVED PHOTOS:
 USER QUESTION: {question}
 
 INSTRUCTIONS:
-1. Answer the user's question directly and conversationally based ONLY on the photos listed above.
-2. For every photo you mention, clearly cite which photo and its Image ID (e.g. Photo 1 [ID: image-id-here]).
-3. Explain what visual details in the photo answer their question.
+1. Answer the user's question directly, conversationally, and concisely based ONLY on the photos listed above (for example: "I found 4 photos that appear to have been taken near sunset...").
+2. Describe the relevant visual details from the photos that directly address their question.
+3. Keep the response natural, helpful, and concise (1 to 3 sentences). The browser will automatically display the corresponding photo cards below your message.
 4. If the retrieved photos do NOT contain what the user asked about, politely inform them that no matching photos were found in their library. Never invent or hallucinate photos.
 
 YOUR ANSWER:"""

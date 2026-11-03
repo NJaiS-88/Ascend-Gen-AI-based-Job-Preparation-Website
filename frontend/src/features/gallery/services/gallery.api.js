@@ -118,12 +118,23 @@ export async function semanticSearch(query, top_k = 20) {
 }
 
 /**
- * Phase 27: AI question-answering over photo captions
+ * Phase 38: RAG (Retrieval-Augmented Generation) Question-Answering
  * POST /api/gallery/ask
+ *
+ * Question -> Query embedding -> Pinecone -> relevant imageIds -> MongoDB captions -> LLM -> { message, imageIds }
+ *
+ * @param {string} question Natural language question (e.g. "Show me photos near sunset")
+ * @param {string} [imageId=null] Optional specific imageId scope
+ * @returns {Promise<{ message: string, imageIds: string[] }>}
  */
-export async function askCloudMetadata(question, limit = 20) {
-    const response = await galleryApi.post('/ask', { question, limit });
-    return response.data;
+export async function askCloudMetadata(question, imageId = null) {
+    const payload = { question: question.trim() };
+    if (imageId) payload.imageId = imageId;
+    const response = await galleryApi.post('/ask', payload);
+    return {
+        message: response.data.message || response.data.answer || '',
+        imageIds: response.data.imageIds || (response.data.referencedImages?.map(r => r.imageId) || [])
+    };
 }
 
 /**
