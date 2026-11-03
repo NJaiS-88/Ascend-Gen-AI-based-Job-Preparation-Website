@@ -21,24 +21,33 @@ import { resolveLocalSearchResult, revokeResolvedBlobUrl } from '../services/loc
  */
 export default function LocalSearchImage({
     imageId,
+    initialBlobUrl = null,
     alt = 'Search result photo',
     className = '',
     style = {},
     fallback = null,
-    onResolved = null
+    onResolved = null,
+    onFailed = null
 }) {
-    const [blobUrl, setBlobUrl] = useState(null);
-    const [status, setStatus] = useState('loading'); // 'loading' | 'resolved' | 'error' | 'missing'
+    const [blobUrl, setBlobUrl] = useState(initialBlobUrl);
+    const [status, setStatus] = useState(initialBlobUrl ? 'resolved' : 'loading'); // 'loading' | 'resolved' | 'error' | 'missing'
     const [errorReason, setErrorReason] = useState(null);
-    const activeUrlRef = useRef(null);
+    const activeUrlRef = useRef(initialBlobUrl);
 
     useEffect(() => {
         let isMounted = true;
+
+        if (initialBlobUrl) {
+            setBlobUrl(initialBlobUrl);
+            setStatus('resolved');
+            return;
+        }
+
         setStatus('loading');
         setErrorReason(null);
 
         // Revoke prior Blob URL if imageId changes
-        if (activeUrlRef.current) {
+        if (activeUrlRef.current && activeUrlRef.current !== initialBlobUrl) {
             revokeResolvedBlobUrl(activeUrlRef.current);
             activeUrlRef.current = null;
             setBlobUrl(null);
@@ -47,6 +56,7 @@ export default function LocalSearchImage({
         if (!imageId) {
             setStatus('error');
             setErrorReason('No imageId provided');
+            if (onFailed) onFailed({ success: false, imageId, reason: 'missing_image_id' });
             return;
         }
 
@@ -65,21 +75,23 @@ export default function LocalSearchImage({
             } else {
                 setStatus(res.reason === 'image_marked_missing' ? 'missing' : 'error');
                 setErrorReason(res.reason || 'Could not resolve local file');
+                if (onFailed) onFailed(res);
             }
         }).catch((err) => {
             if (!isMounted) return;
             setStatus('error');
             setErrorReason(err.message || 'Resolution failed');
+            if (onFailed) onFailed({ success: false, imageId, reason: err.message || 'resolution_error' });
         });
 
         return () => {
             isMounted = false;
-            if (activeUrlRef.current) {
+            if (activeUrlRef.current && activeUrlRef.current !== initialBlobUrl) {
                 revokeResolvedBlobUrl(activeUrlRef.current);
                 activeUrlRef.current = null;
             }
         };
-    }, [imageId]);
+    }, [imageId, initialBlobUrl]);
 
     if (status === 'loading') {
         return (

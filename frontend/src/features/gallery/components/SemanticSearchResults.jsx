@@ -1,12 +1,14 @@
+import { useState } from 'react';
 import LocalSearchImage from './LocalSearchImage';
 
 /**
- * Phase 35 — Semantic Search Results Grid
+ * Phase 35 & Phase 36 — Semantic Search Results Grid
  *
- * Visualizes the privacy separation:
+ * Enforces Phase 36 Final Availability Verification:
  * 1. Pinecone determines which photos are semantically relevant (returns imageId + score).
- * 2. LocalSearchImage executes the local resolution pipeline:
- *    imageId -> IndexedDB (folderId + relativePath) -> FileSystemDirectoryHandle -> File -> Blob URL -> <img>
+ * 2. Local resolution is attempted on-device.
+ * 3. Broken or missing results are skipped completely and queued for reconciliation.
+ * 4. Never displays broken image cards just because Pinecone returned an ID.
  *
  * No photos ever touch the cloud or network.
  */
@@ -16,6 +18,13 @@ export default function SemanticSearchResults({
     loading = false,
     onClear = () => {}
 }) {
+    // Phase 36: Filter out unresolvable / missing results so broken image cards are never rendered
+    const [failedIds, setFailedIds] = useState(new Set());
+
+    const availableResults = results.filter(
+        item => item && item.success !== false && !failedIds.has(item.imageId)
+    );
+
     if (loading) {
         return (
             <div style={{
@@ -60,7 +69,7 @@ export default function SemanticSearchResults({
                             Semantic Search Results for: &ldquo;{query}&rdquo;
                         </h3>
                         <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                            Found {results.length} match{results.length === 1 ? '' : 'es'} ranked by vector similarity &bull; 🔒 Rendered locally on device
+                            Found {availableResults.length} match{availableResults.length === 1 ? '' : 'es'} ranked by vector similarity &bull; 🔒 Rendered locally on device
                         </p>
                     </div>
                 </div>
@@ -74,7 +83,7 @@ export default function SemanticSearchResults({
                 </button>
             </div>
 
-            {results.length === 0 ? (
+            {availableResults.length === 0 ? (
                 <div style={{
                     textAlign: 'center',
                     padding: '40px 24px',
@@ -85,7 +94,7 @@ export default function SemanticSearchResults({
                 }}>
                     <span style={{ fontSize: '2rem' }}>🔍</span>
                     <p style={{ fontSize: '0.95rem', fontWeight: 500, marginTop: '8px' }}>
-                        No photos matched &ldquo;{query}&rdquo;
+                        No available photos matched &ldquo;{query}&rdquo;
                     </p>
                     <p style={{ fontSize: '0.8rem', marginTop: '4px' }}>
                         Try a different natural language description (e.g. &ldquo;beach sunset&rdquo;, &ldquo;people laughing&rdquo;, &ldquo;mountain hike&rdquo;).
@@ -97,7 +106,7 @@ export default function SemanticSearchResults({
                     gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
                     gap: '20px'
                 }}>
-                    {results.map((item) => (
+                    {availableResults.map((item) => (
                         <div
                             key={item.imageId}
                             style={{
@@ -133,16 +142,69 @@ export default function SemanticSearchResults({
                                 <span>{Math.round((item.score || 0) * 100)}%</span>
                             </div>
 
-                            {/* Phase 35: Local Search Image Resolver */}
+                            {/* Phase 35 & 36: Local Search Image Resolver */}
                             <div style={{ width: '100%', height: '190px', backgroundColor: '#0f172a' }}>
                                 <LocalSearchImage
                                     imageId={item.imageId}
+                                    initialBlobUrl={item.blobUrl}
                                     alt={item.caption || 'Search result photo'}
+                                    onFailed={() => setFailedIds(prev => new Set(prev).add(item.imageId))}
                                 />
                             </div>
 
                             {/* Metadata Card Footer */}
                             <div style={{ padding: '12px 14px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                                        ID: {item.imageId.slice(0, 12)}...
+                                    </span>
+                                    <span style={{ fontSize: '0.68rem', color: '#10b981', fontWeight: 600 }}>
+                                        ✓ Local
+                                    </span>
+                                </div>
+
+                                {item.caption && (
+                                    <p style={{
+                                        fontSize: '0.82rem',
+                                        color: 'var(--text-primary)',
+                                        lineHeight: 1.4,
+                                        marginTop: '4px',
+                                        display: '-webkit-box',
+                                        WebkitLineClamp: 3,
+                                        WebkitBoxOrient: 'vertical',
+                                        overflow: 'hidden'
+                                    }}>
+                                        &ldquo;{item.caption}&rdquo;
+                                    </p>
+                                )}
+
+                                {item.keywords && item.keywords.length > 0 && (
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px' }}>
+                                        {item.keywords.slice(0, 3).map((kw) => (
+                                            <span
+                                                key={kw}
+                                                style={{
+                                                    fontSize: '0.65rem',
+                                                    padding: '2px 6px',
+                                                    borderRadius: '4px',
+                                                    backgroundColor: '#f1f5f9',
+                                                    color: '#475569',
+                                                    border: '1px solid #e2e8f0'
+                                                }}
+                                            >
+                                                #{kw}
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
                                     <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                                         ID: {item.imageId.slice(0, 12)}...

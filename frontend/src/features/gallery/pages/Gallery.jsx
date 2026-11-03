@@ -10,6 +10,7 @@ import AiIndexingBanner from '../components/AiIndexingBanner';
 import { useGallery } from '../hooks/useGallery';
 import { isMobileOrTabletDevice } from '../services/fileSystem';
 import { semanticSearch } from '../services/gallery.api';
+import { resolveAndFilterAvailableResults } from '../services/localSearchResolver';
 
 export default function Gallery() {
     const isMobile = isMobileOrTabletDevice();
@@ -29,7 +30,7 @@ export default function Gallery() {
 
     const [searchQuery, setSearchQuery] = useState('');
     const [semanticResults, setSemanticResults] = useState(null);
-    const [isSemanticSearching, setIsSemanticSearching] = useState(false);
+    const [isSemanticSnot update more tearching, setIsSemanticSearching] = useState(false);
     const [semanticQuery, setSemanticQuery] = useState('');
     const navigate = useNavigate();
 
@@ -39,7 +40,11 @@ export default function Gallery() {
         setSemanticQuery(queryText.trim());
         try {
             const data = await semanticSearch(queryText.trim(), 30);
-            setSemanticResults(data.results || []);
+            // Phase 36: Final Availability Verification
+            // Attempt local resolution for candidate IDs returned by Pinecone.
+            // Filter out broken results and trigger automatic reconciliation.
+            const verifiedResults = await resolveAndFilterAvailableResults(data.results || []);
+            setSemanticResults(verifiedResults);
         } catch (err) {
             console.error('Semantic search error:', err);
             setSemanticResults([]);
@@ -63,10 +68,10 @@ export default function Gallery() {
 
                 {!activeFolder ? (
                     folders.length === 0 ? (
-                        <ConnectFolder 
-                            onConnectFolder={addFolder} 
-                            loading={loading} 
-                            error={error} 
+                        <ConnectFolder
+                            onConnectFolder={addFolder}
+                            loading={loading}
+                            error={error}
                         />
                     ) : (
                         <div style={{ textAlign: 'center', padding: '40px 0' }}>
@@ -84,8 +89,8 @@ export default function Gallery() {
                                         <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '14px' }}>
                                             {f.fileCount} photos detected
                                         </p>
-                                        <button 
-                                            onClick={() => selectFolder(f.id)} 
+                                        <button
+                                            onClick={() => selectFolder(f.id)}
                                             className="btn-nav-primary"
                                             style={{ width: '100%', fontSize: '0.85rem' }}
                                         >
