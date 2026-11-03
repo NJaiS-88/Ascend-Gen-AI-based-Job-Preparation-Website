@@ -1,5 +1,6 @@
 import { computeFileHash, computeFingerprint } from './crypto';
 import { getLocalOwnerId } from './galleryDb';
+import { cloudSyncManager } from './cloudSync';
 
 /**
  * Phase 21: Resolves safe caption status.
@@ -245,6 +246,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
     }
 
     // Pass 3: Brand new images
+    const unmatchedDiscovered = [];
     for (const disc of discoveredFiles) {
         if (matchedDiscoveredPaths.has(disc.path)) continue;
 
@@ -259,15 +261,52 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
         }
 
         const fingerprint = hash ? await computeFingerprint(hash) : null;
+        unmatchedDiscovered.push({ disc, hash, fingerprint });
+    }
 
+    // Phase 37: Cross-Browser Reconciliation — check cloud for previously indexed content
+    const candidatesForCloud = [];
+    for (const item of unmatchedDiscovered) {
+        const localMatch = existingRecords.find(r =>
+            r.contentHash && r.contentHash === item.hash && r.caption && r.caption.trim().length > 0
+        );
+        if (!localMatch && item.fingerprint) {
+            candidatesForCloud.push({ fingerprint: item.fingerprint });
+        }
+    }
+
+    const cloudMatchesByFingerprint = new Map();
+    if (candidatesForCloud.length > 0) {
+        try {
+            const cloudMatches = await cloudSyncManager.reconcileFingerprintsWithCloud(candidatesForCloud);
+            if (Array.isArray(cloudMatches)) {
+                cloudMatches.forEach(m => {
+                    if (m && m.fingerprint) {
+                        cloudMatchesByFingerprint.set(m.fingerprint, m);
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn('[Reconciliation] Cloud fingerprint matching skipped:', e);
+        }
+    }
+
+    const assignedImageIds = new Set([
+        ...existingRecords.map(r => r.imageId),
+        ...results.map(r => r.imageId)
+    ]);
+
+    for (const { disc, hash, fingerprint } of unmatchedDiscovered) {
         // Instant Hash Deduplication: Check if any existing image in database already has this exact hash and is captioned
         const existingCaptioned = existingRecords.find(r =>
             r.contentHash && r.contentHash === hash && r.caption && r.caption.trim().length > 0
         );
 
         if (existingCaptioned) {
+            const newId = crypto.randomUUID();
+            assignedImageIds.add(newId);
             results.push({
-                imageId: crypto.randomUUID(),
+                imageId: newId,
                 folderId,
                 relativePath: disc.path,
                 fileName: disc.name,
@@ -294,8 +333,46 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
             continue;
         }
 
+        // Phase 37: Reconcile matched content from cloud — reuse imageId & caption, skip VLM regeneration
+        const cloudMatch = fingerprint ? cloudMatchesByFingerprint.get(fingerprint) : null;
+        if (cloudMatch && cloudMatch.caption) {
+            const imageId = (!assignedImageIds.has(cloudMatch.imageId))
+                ? cloudMatch.imageId
+                : crypto.randomUUID();
+            assignedImageIds.add(imageId);
+
+            results.push({
+                imageId,
+                folderId,
+                relativePath: disc.path,
+                fileName: disc.name,
+                size: disc.size,
+                lastModified: disc.lastModified,
+                contentHash: hash,
+                fingerprint,
+                status: "available",
+                missingSince: null,
+                caption: cloudMatch.caption,
+                keywords: cloudMatch.keywords || [],
+                captionEngine: cloudMatch.metadata?.captionEngine || 'cloud',
+                captionModel: cloudMatch.metadata?.captionModel || 'qwen3-vl-8b-instruct',
+                captionVersion: cloudMatch.metadata?.captionVersion || 1,
+                captionStatus: "completed",
+                cloudIndexStatus: "completed",
+                queuePriority: null,
+                retryCount: 0,
+                processingStartedAt: null,
+                captionedAt: cloudMatch.updatedAt ? new Date(cloudMatch.updatedAt).getTime() : Date.now(),
+                indexedAt: cloudMatch.indexedAt ? new Date(cloudMatch.indexedAt).getTime() : Date.now(),
+                indexingStatus: "indexed"
+            });
+            continue;
+        }
+
+        const newId = crypto.randomUUID();
+        assignedImageIds.add(newId);
         results.push({
-            imageId: crypto.randomUUID(),
+            imageId: newId,
             folderId,
             relativePath: disc.path,
             fileName: disc.name,
@@ -535,13 +612,59 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
     // =========================================================================
     // PASS 3: Newly Added Files
     // =========================================================================
+    const unmatchedSnapshot = [];
     for (let i = 0; i < globalSnapshot.length; i++) {
         if (matchedSnapshotIndices.has(i)) continue;
         const item = globalSnapshot[i];
 
         const hash = item.contentHash || await computeFileHash(item.file);
+        item.contentHash = hash;
         const fingerprint = hash ? await computeFingerprint(hash) : null;
+        item.fingerprint = fingerprint;
+        unmatchedSnapshot.push({ item, hash, fingerprint });
+    }
 
+    // Phase 37: Cross-Browser Reconciliation — check cloud for previously indexed content
+    const candidatesForCloud = [];
+    for (const { item, hash, fingerprint } of unmatchedSnapshot) {
+        const localMatch = allExistingRecords.find(r =>
+            r.contentHash && r.contentHash === hash && r.caption && r.caption.trim().length > 0
+        ) || created.find(r =>
+            r.contentHash && r.contentHash === hash && r.caption && r.caption.trim().length > 0
+        );
+        if (!localMatch && fingerprint) {
+            candidatesForCloud.push({ fingerprint });
+        }
+    }
+
+    const cloudMatchesByFingerprint = new Map();
+    if (candidatesForCloud.length > 0) {
+        try {
+            const cloudMatches = await cloudSyncManager.reconcileFingerprintsWithCloud(candidatesForCloud);
+            if (Array.isArray(cloudMatches)) {
+                cloudMatches.forEach(m => {
+                    if (m && m.fingerprint) {
+                        cloudMatchesByFingerprint.set(m.fingerprint, m);
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn('[Reconciliation] Global cloud fingerprint matching skipped:', e);
+        }
+    }
+
+    const assignedImageIds = new Set([
+        ...allExistingRecords.map(r => r.imageId),
+        ...unchanged.map(r => r.imageId),
+        ...modified.map(r => r.imageId),
+        ...renamed.map(r => r.imageId),
+        ...movedWithinFolder.map(r => r.imageId),
+        ...movedBetweenFolders.map(r => r.imageId),
+        ...restored.map(r => r.imageId),
+        ...created.map(r => r.imageId)
+    ]);
+
+    for (const { item, hash, fingerprint } of unmatchedSnapshot) {
         // Check if ANY existing image in the database already has this exact hash and is captioned!
         const existingCaptioned = allExistingRecords.find(r =>
             r.contentHash && r.contentHash === hash && r.caption && r.caption.trim().length > 0
@@ -551,8 +674,10 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
 
         if (existingCaptioned) {
             // Instant zero-compute reuse: identical photo already has an AI caption!
+            const newId = crypto.randomUUID();
+            assignedImageIds.add(newId);
             created.push({
-                imageId: crypto.randomUUID(),
+                imageId: newId,
                 folderId: item.folderId,
                 relativePath: item.relativePath,
                 fileName: item.fileName,
@@ -576,9 +701,19 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 indexedAt: null,
                 indexingStatus: "indexed"
             });
-        } else {
+            continue;
+        }
+
+        // Phase 37: Reconcile matched content from cloud — reuse imageId & caption, skip VLM regeneration
+        const cloudMatch = fingerprint ? cloudMatchesByFingerprint.get(fingerprint) : null;
+        if (cloudMatch && cloudMatch.caption) {
+            const imageId = (!assignedImageIds.has(cloudMatch.imageId))
+                ? cloudMatch.imageId
+                : crypto.randomUUID();
+            assignedImageIds.add(imageId);
+
             created.push({
-                imageId: crypto.randomUUID(), // Brand-new identity
+                imageId,
                 folderId: item.folderId,
                 relativePath: item.relativePath,
                 fileName: item.fileName,
@@ -588,20 +723,49 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 fingerprint,
                 status: "available",
                 missingSince: null,
-                captionStatus: "pending",
-                cloudIndexStatus: "pending",
-                caption: null,
-                captionEngine: null,
-                captionModel: null,
-                captionVersion: null,
-                queuePriority: 1, // Priority 1: New image
+                caption: cloudMatch.caption,
+                keywords: cloudMatch.keywords || [],
+                captionEngine: cloudMatch.metadata?.captionEngine || 'cloud',
+                captionModel: cloudMatch.metadata?.captionModel || 'qwen3-vl-8b-instruct',
+                captionVersion: cloudMatch.metadata?.captionVersion || 1,
+                captionStatus: "completed",
+                cloudIndexStatus: "completed",
+                queuePriority: null,
                 retryCount: 0,
                 processingStartedAt: null,
-                captionedAt: null,
-                indexedAt: null,
-                indexingStatus: "pending"
+                captionedAt: cloudMatch.updatedAt ? new Date(cloudMatch.updatedAt).getTime() : Date.now(),
+                indexedAt: cloudMatch.indexedAt ? new Date(cloudMatch.indexedAt).getTime() : Date.now(),
+                indexingStatus: "indexed"
             });
+            continue;
         }
+
+        const newId = crypto.randomUUID();
+        assignedImageIds.add(newId);
+        created.push({
+            imageId: newId, // Brand-new identity
+            folderId: item.folderId,
+            relativePath: item.relativePath,
+            fileName: item.fileName,
+            size: item.size,
+            lastModified: item.lastModified,
+            contentHash: hash,
+            fingerprint,
+            status: "available",
+            missingSince: null,
+            captionStatus: "pending",
+            cloudIndexStatus: "pending",
+            caption: null,
+            captionEngine: null,
+            captionModel: null,
+            captionVersion: null,
+            queuePriority: 1, // Priority 1: New image
+            retryCount: 0,
+            processingStartedAt: null,
+            captionedAt: null,
+            indexedAt: null,
+            indexingStatus: "pending"
+        });
     }
 
     // =========================================================================
