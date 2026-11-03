@@ -119,15 +119,18 @@ const syncTombstonesRequestSchema = z.object({
 });
 
 /**
- * Strict schema for Phase 27 / 30 reconciliation request payload:
- * { items: [ { imageId, fingerprint, status? }, ... ] }
+ * Strict schema for Phase 27 / 30 / 37 reconciliation request payload:
+ * { items: [ { imageId?, fingerprint?, status? }, ... ] }
+ * Supports cross-browser matching via fingerprint.
  */
 const reconcileRequestSchema = z.object({
     items: z.array(z.object({
-        imageId: z.string().uuid({ message: "imageId must be a valid UUID string" }),
+        imageId: z.string().max(128).optional().nullable(),
         fingerprint: z.string().min(1).max(256).optional().nullable(),
         status: z.enum(['available', 'missing', 'deleted']).optional()
-    }).strict()).min(1, { message: "Reconcile items cannot be empty" }).max(5000, { message: "Cannot reconcile more than 5000 items in a single request" })
+    }).strict().refine(item => Boolean(item.imageId || item.fingerprint), {
+        message: "Each reconcile item must provide at least imageId or fingerprint"
+    })).min(1, { message: "Reconcile items cannot be empty" }).max(5000, { message: "Cannot reconcile more than 5000 items in a single request" })
 }).strict({
     message: "Unexpected field in reconcile request. Only 'items' array is permitted."
 });

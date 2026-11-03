@@ -364,16 +364,23 @@ const reconcileMetadata = async (req, res) => {
         const userId = req.user.id;
         const localItems = req.validatedData.items;
 
-        const localMap = new Map(localItems.map(item => [item.imageId, item]));
-        const localIds = Array.from(localMap.keys());
+        const localIds = localItems.filter(it => it.imageId).map(it => it.imageId);
+        const localFingerprints = localItems.filter(it => it.fingerprint).map(it => it.fingerprint);
 
-        // Fetch all matching records from user's cloud index
-        const cloudRecords = await Metadata.find(
-            { imageId: { $in: localIds }, userId },
-            'imageId fingerprint caption status keywords retrievalText'
-        ).lean();
+        const matchConditions = [];
+        if (localIds.length > 0) matchConditions.push({ imageId: { $in: localIds } });
+        if (localFingerprints.length > 0) matchConditions.push({ fingerprint: { $in: localFingerprints } });
 
-        const cloudMap = new Map(cloudRecords.map(r => [r.imageId, r]));
+        // Phase 37: Fetch matching records by imageId OR fingerprint for this user
+        const cloudRecords = matchConditions.length > 0
+            ? await Metadata.find(
+                { userId, $or: matchConditions },
+                'imageId fingerprint caption keywords retrievalText status captionEngine captionModel captionVersion'
+            ).lean()
+            : [];
+
+        const cloudIdMap = new Map(cloudRecords.map(r => [r.imageId, r]));
+        const cloudFpMap = new Map(cloudRecords.map(r => [r.fingerprint, r]));
 
         const missingInCloud = [];
         const upToDate = [];
@@ -382,20 +389,43 @@ const reconcileMetadata = async (req, res) => {
         const deactivatingIds = [];
         const restoringRecords = [];
 
-        for (const [localId, localItem] of localMap.entries()) {
-            const cloudRec = cloudMap.get(localId);
+        // Phase 37: Collect existing imageId matches for new browser reconciliation
+        const matchedByFingerprint = [];
+        const seenMatchedFps = new Set();
+        for (const fp of localFingerprints) {
+            if (seenMatchedFps.has(fp)) continue;
+            const rec = cloudFpMap.get(fp);
+            if (rec) {
+                seenMatchedFps.add(fp);
+                matchedByFingerprint.push({
+                    imageId: rec.imageId,
+                    fingerprint: rec.fingerprint,
+                    caption: rec.caption,
+                    keywords: rec.keywords || [],
+                    retrievalText: rec.retrievalText || null,
+                    status: rec.status,
+                    captionEngine: rec.captionEngine,
+                    captionModel: rec.captionModel,
+                    captionVersion: rec.captionVersion
+                });
+            }
+        }
+
+        for (const localItem of localItems) {
+            const localId = localItem.imageId;
+            const cloudRec = (localId && cloudIdMap.get(localId)) || (localItem.fingerprint && cloudFpMap.get(localItem.fingerprint));
+
             if (!cloudRec) {
-                missingInCloud.push(localId);
+                if (localId) missingInCloud.push(localId);
             } else if (cloudRec.status === 'deleted') {
-                deletedInCloud.push(localId);
+                if (localId) deletedInCloud.push(localId);
             } else {
-                // Phase 30 & Phase 33: Availability Synchronization & Vector Lifecycle
-                // If local status differs from cloud status (available <-> missing), update MongoDB
-                // while strictly keeping caption & fingerprint intact.
+                // Phase 30, 33 & 37: Availability Synchronization & Vector Lifecycle
+                const targetId = cloudRec.imageId;
                 if (localItem.status && localItem.status !== cloudRec.status && localItem.status !== 'deleted') {
                     availabilitySyncOps.push({
                         updateOne: {
-                            filter: { imageId: localId, userId },
+                            filter: { imageId: targetId, userId },
                             update: {
                                 $set: {
                                     status: localItem.status,
@@ -405,9 +435,9 @@ const reconcileMetadata = async (req, res) => {
                         }
                     });
 
-                    // Phase 33: Track vector deactivation vs restoration
+                    // Track vector deactivation vs restoration
                     if (localItem.status === 'missing') {
-                        deactivatingIds.push(localId);
+                        deactivatingIds.push(targetId);
                     } else if (localItem.status === 'available') {
                         restoringRecords.push({
                             ...cloudRec,
@@ -415,29 +445,29 @@ const reconcileMetadata = async (req, res) => {
                         });
                     }
                 }
-                upToDate.push(localId);
+                if (localId) upToDate.push(localId);
             }
         }
 
         if (availabilitySyncOps.length > 0) {
             await Metadata.bulkWrite(availabilitySyncOps);
-            console.log(`[Reconcile] Phase 30/33: Synchronized availability for ${availabilitySyncOps.length} photo(s) in cloud.`);
+            console.log(`[Reconcile] Phase 30/33/37: Synchronized availability for ${availabilitySyncOps.length} photo(s) in cloud.`);
 
-            // Phase 33: Deactivate vectors for missing photos from Pinecone
+            // Deactivate vectors for missing photos from Pinecone
             if (deactivatingIds.length > 0) {
                 deleteFromPinecone(userId, deactivatingIds).catch(() => {});
-                console.log(`[Reconcile] Phase 33: Deactivated ${deactivatingIds.length} missing vector(s) in Pinecone.`);
+                console.log(`[Reconcile] Deactivated ${deactivatingIds.length} missing vector(s) in Pinecone.`);
             }
 
-            // Phase 33: Recreate / re-upsert vectors for restored photos (No VLM inference)
+            // Recreate / re-upsert vectors for restored photos (No VLM inference)
             if (restoringRecords.length > 0) {
                 syncToPinecone(userId, restoringRecords).catch(() => {});
-                console.log(`[Reconcile] Phase 33: Re-upserted ${restoringRecords.length} restored vector(s) in Pinecone (Zero VLM inference).`);
+                console.log(`[Reconcile] Re-upserted ${restoringRecords.length} restored vector(s) in Pinecone (Zero VLM inference).`);
             }
         }
 
         return res.status(200).json({
-            reconciledCount: localIds.length,
+            reconciledCount: localItems.length,
             missingInCloudCount: missingInCloud.length,
             missingInCloud,
             upToDateCount: upToDate.length,
@@ -445,7 +475,10 @@ const reconcileMetadata = async (req, res) => {
             deletedInCloud,
             availabilitySynchronizedCount: availabilitySyncOps.length,
             deactivatedVectorCount: deactivatingIds.length,
-            restoredVectorCount: restoringRecords.length
+            restoredVectorCount: restoringRecords.length,
+            // Phase 37: Cross-Browser matches returned for local mapping rebuild
+            matchedByFingerprintCount: matchedByFingerprint.length,
+            matchedByFingerprint
         });
     } catch (err) {
         console.error('[GalleryController] Error reconciling metadata:', err);
