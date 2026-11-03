@@ -203,6 +203,50 @@ class CloudSyncManager {
     }
 
     /**
+     * Phase 37: Cross-Browser Reconciliation
+     * Dispatches locally discovered fingerprints to POST /api/gallery/reconcile.
+     * Matches user + fingerprints in cloud and returns existing imageIds & captions,
+     * allowing the new browser to rebuild its local mapping with zero VLM inference.
+     *
+     * @param {Array<{ fingerprint: string, imageId?: string, status?: string }>} items
+     * @returns {Promise<Array<{ imageId: string, fingerprint: string, caption: string, keywords: Array<string> }>>}
+     */
+    async reconcileFingerprintsWithCloud(items) {
+        if (!items || items.length === 0) return [];
+        try {
+            const cleanItems = items
+                .filter(it => it && it.fingerprint)
+                .map(it => ({
+                    fingerprint: String(it.fingerprint),
+                    ...(it.imageId ? { imageId: String(it.imageId) } : {}),
+                    status: it.status || 'available'
+                }));
+
+            if (cleanItems.length === 0) return [];
+
+            const response = await fetch(`${CLOUD_SYNC_BASE_URL}/reconcile`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ items: cleanItems })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                const matched = data.matchedByFingerprint || [];
+                console.log(`[CloudSync] 🔄 Phase 37: Reconciled ${matched.length} fingerprint match(es) from cloud.`);
+                return matched;
+            } else {
+                console.warn('[CloudSync] Cross-browser reconcile request failed:', response.status);
+                return [];
+            }
+        } catch (err) {
+            console.warn('[CloudSync] Cross-browser reconcile deferred (backend offline):', err.message);
+            return [];
+        }
+    }
+
+    /**
      * Returns current status and telemetry of cloud synchronization.
      */
     getStatus() {

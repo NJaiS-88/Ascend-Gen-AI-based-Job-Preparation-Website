@@ -131,3 +131,16 @@ export async function syncCloudAvailability(updates) {
     const response = await galleryApi.post('/availability', { updates });
     return response.data;
 }
+
+/**
+ * Phase 37: Cross-Browser Cloud Reconciliation
+ * POST /api/gallery/reconcile
+ * Matches user + fingerprints in cloud and returns existing imageIds & captions.
+ *
+ * @param {Array<{ fingerprint: string, imageId?: string, status?: string }>} items
+ */
+export async function reconcileCloudMetadata(items) {
+    if (!items || items.length === 0) return { matchedByFingerprint: [] };
+    const response = await galleryApi.post('/reconcile', { items });
+    return response.data;
+}
