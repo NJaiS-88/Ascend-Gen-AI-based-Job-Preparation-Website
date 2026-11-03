@@ -30,7 +30,7 @@ export default function Gallery() {
 
     const [searchQuery, setSearchQuery] = useState('');
     const [semanticResults, setSemanticResults] = useState(null);
-    const [isSemanticSnot update more tearching, setIsSemanticSearching] = useState(false);
+    const [isSemanticSearching, setIsSemanticSearching] = useState(false);
     const [semanticQuery, setSemanticQuery] = useState('');
     const navigate = useNavigate();
 
